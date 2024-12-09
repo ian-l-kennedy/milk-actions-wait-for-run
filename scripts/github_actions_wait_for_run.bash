@@ -109,27 +109,28 @@ if ! [[ "$outer_retry_limit" =~ ^[0-9]+$ ]] || ! [[ "$outer_retry_delay" =~ ^[0-
 fi
 
 INFO "Running with:"
-INFO "  Regexp: $regexp"
+INFO "  Mimic Conclusion: $mimic_input_conclusion"
 INFO "  Base URL: $base_url"
 INFO "  Owner: $owner"
 INFO "  Repo: $repo"
-INFO "  Workflow ID: $workflow_id"
+INFO "  Workflow ID: $workflow_run_id"
 INFO "  Outer Retry Limit: $outer_retry_limit"
 INFO "  Outer Retry Delay: $outer_retry_delay"
 
-# Setup log file
-LOG_FILE="/tmp/action_log.txt"
+# Setup a unique log file
+LOG_FILE="/tmp/action_log_milk_actions_wait_for_run_${workflow_run_id}_$$.txt"
 
-if [[ ! -e "$LOG_FILE" ]]; then
-    touch "$LOG_FILE"
-    if [[ $? -ne 0 ]]; then
-        echo "LOG ERROR: Failed to create log file: $LOG_FILE"
-        exit 1
-    fi
-elif [[ ! -w "$LOG_FILE" ]]; then
+if ! touch "$LOG_FILE"; then
+    echo "LOG ERROR: Failed to create log file: $LOG_FILE"
+    exit 1
+fi
+
+if [[ ! -w "$LOG_FILE" ]]; then
     echo "LOG ERROR: Log file is not writable: $LOG_FILE"
     exit 1
 fi
+
+INFO "Log file created: $LOG_FILE"
 
 INFO "Defining functions..."
 
@@ -179,3 +180,116 @@ clear_log() {
         echo "LOG ERROR: Cannot clear log file: $LOG_FILE"
     fi
 }
+
+clear_log
+
+trap display_log EXIT
+
+fetch_run_status() {
+    local run_id="$1"
+    local response
+
+    LOGGER_INFO "Fetching status for workflow run ID: $run_id"
+    LOGGER_INFO "Making API request to: ${base_url}/repos/${owner}/${repo}/actions/runs/${run_id}"
+
+    response=$(curl -s -H "Authorization: Bearer $github_token" \
+        -H "Accept: application/vnd.github.v3+json" \
+        "${base_url}/repos/${owner}/${repo}/actions/runs/${run_id}")
+
+    if [[ -z "$response" ]]; then
+        LOGGER_ERROR "Empty response from GitHub API for workflow run ID: $run_id"
+        return 1
+    fi
+
+    LOGGER_INFO "Raw response received from GitHub API:"
+    LOGGER_INFO "$response"
+
+    if ! echo "$response" | jq -e . > /dev/null 2>&1; then
+        LOGGER_ERROR "Invalid JSON response received for workflow run ID: $run_id. Response: $response"
+        return 1
+    fi
+
+    # Parse the `status` and `conclusion` fields
+    local status conclusion
+    status=$(echo "$response" | jq -r '.status // "null"')
+    conclusion=$(echo "$response" | jq -r '.conclusion // "null"')
+
+    LOGGER_INFO "Parsed status: $status"
+    LOGGER_INFO "Parsed conclusion: $conclusion"
+
+    if [[ "$status" == "null" ]]; then
+        LOGGER_ERROR "The status field is null or not present in the response for workflow run ID: $run_id. Response: $response"
+        return 1
+    fi
+
+    if [[ "$status" == "queued" ]]; then
+        LOGGER_INFO "Workflow run ID: $run_id is in queued state with no conclusion available."
+        conclusion="null"  # Ensure conclusion is explicitly null for queued status
+    fi
+
+    if [[ "$status" == "completed" && "$conclusion" == "null" ]]; then
+        LOGGER_WARN "Workflow run ID: $run_id is marked as completed but has no conclusion. Treating it as failure."
+        conclusion="failure"  # Assume failure if completed without a conclusion
+    fi
+
+    LOGGER_INFO "Returning status: $status, conclusion: $conclusion"
+    echo "$status" "$conclusion"
+    return 0
+}
+
+
+INFO "main..."
+
+INFO "Starting to poll GitHub API for workflow run status..."
+
+retry_count=0
+while [[ $retry_count -lt $outer_retry_limit ]]; do
+    set +e
+    fetch_run_status_output=$(fetch_run_status "$workflow_run_id" 2>&1)
+    fetch_run_status_result=$?
+    set -e
+
+    display_log
+    clear_log
+
+    if [[ $fetch_run_status_result -ne 0 ]]; then
+        ERROR "Failed to fetch run status for workflow ID: $workflow_run_id. Output: $fetch_run_status_output"
+        INFO "Retrying after $outer_retry_delay seconds..."
+        retry_count=$((retry_count + 1))
+        sleep "$outer_retry_delay"
+        continue
+    fi
+
+    # Parse the output from fetch_run_status
+    read -r status conclusion <<< "$fetch_run_status_output"
+
+    if [[ "$status" == "pending" || "$status" == "queued" || "$status" == "in_progress" ]]; then
+        INFO "Workflow run is still ongoing. Current status: $status, Conclusion: $conclusion (if any)."
+        INFO "Waiting for $outer_retry_delay seconds before retrying..."
+        retry_count=$((retry_count + 1))
+        sleep "$outer_retry_delay"
+        continue
+    fi
+
+    if [[ "$status" == "completed" ]]; then
+        if [[ "$mimic_input_conclusion" == "true" ]]; then
+            if [[ "$conclusion" == "success" ]]; then
+                NOTICE "Workflow run completed successfully."
+                exit 0
+            else
+                NOTICE "Workflow run completed with conclusion: $conclusion"
+                exit 1
+            fi
+        else
+            NOTICE "Workflow run completed. Mimic conclusion is disabled. Passing regardless of result."
+            exit 0
+        fi
+    fi
+
+    INFO "Unexpected status: $status. Retrying after $outer_retry_delay seconds..."
+    retry_count=$((retry_count + 1))
+    sleep "$outer_retry_delay"
+done
+
+ERROR "Reached retry limit ($outer_retry_limit). Workflow run did not complete in time."
+exit 1

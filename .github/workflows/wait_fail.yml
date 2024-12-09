@@ -12,7 +12,6 @@ jobs:
   # Fail wait (negative case)
   wait-1:
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - name: Fail Wait
         shell: bash

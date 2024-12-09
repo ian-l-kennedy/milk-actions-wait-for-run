@@ -9,7 +9,79 @@ on:
       - main
 
 jobs:
-  test_the_action:
+  setup:
+    name: Prepare Workflow Run IDs
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      run_id_wait: ${{ steps.export.outputs.run_id_wait }}
+      run_id_wait_fail: ${{ steps.export.outputs.run_id_wait_fail }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Acquire run_id for workflows
+        id: export
+        shell: bash
+        run: |
+          echo "Starting acquisition of run_ids for the workflows triggered by this pull request..."
+
+          # Fetch pull request details directly from GitHub API
+          PR_DETAILS=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+                            "https://api.github.com/repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}")
+
+          # Validate the API response
+          if ! jq empty <<< "$PR_DETAILS"; then
+            echo "Error: Pull request details are not valid JSON."
+            exit 1
+          fi
+
+          # Extract the pull request ID
+          PR_ID=$(jq -r '.number' <<< "$PR_DETAILS")
+          if [[ -z "$PR_ID" || "$PR_ID" == "null" ]]; then
+            echo "Error: Failed to extract pull request ID."
+            exit 1
+          fi
+
+          # Fetch workflow runs
+          RESPONSE=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+                          "https://api.github.com/repos/${{ github.repository }}/actions/runs")
+
+          if ! jq empty <<< "$RESPONSE"; then
+            echo "Error: Workflow runs API response is not valid JSON."
+            exit 1
+          fi
+
+          # Extract run_id for 'wait'
+          RUN_ID_WAIT=$(jq -r \
+            --arg pr "$PR_ID" \
+            '[.workflow_runs[] | select(.name == "wait" and .event == "pull_request" and .pull_requests[].number == ($pr | tonumber)) | {id, created_at}] | sort_by(.created_at) | last | .id' \
+            <<< "$RESPONSE")
+          if [[ -z "$RUN_ID_WAIT" || "$RUN_ID_WAIT" == "null" ]]; then
+            echo "Error: No matching workflow run found for 'wait'."
+            exit 1
+          fi
+
+          # Extract run_id for 'wait_fail'
+          RUN_ID_WAIT_FAIL=$(jq -r \
+            --arg pr "$PR_ID" \
+            '[.workflow_runs[] | select(.name == "wait_fail" and .event == "pull_request" and .pull_requests[].number == ($pr | tonumber)) | {id, created_at}] | sort_by(.created_at) | last | .id' \
+            <<< "$RESPONSE")
+          if [[ -z "$RUN_ID_WAIT_FAIL" || "$RUN_ID_WAIT_FAIL" == "null" ]]; then
+            echo "Error: No matching workflow run found for 'wait_fail'."
+            exit 1
+          fi
+
+          echo "::set-output name=run_id_wait::$RUN_ID_WAIT"
+          echo "::set-output name=run_id_wait_fail::$RUN_ID_WAIT_FAIL"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  wait_for_positive_case:
+    name: Wait for Positive Case
+    needs: setup
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -17,64 +89,103 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
-      - name: Acquire run_id for the positive case 'wait'
-        shell: bash
-        run: |
-          # get run_id for workflow run of type 'wait' triggered by 'this' pull request id (current)
-          # pass run_id into this jobs variables so we can use in another step
-          
-      - name: Acquire run_id for the positive case 'wait_fail'
-        shell: bash
-        run: |
-          # get run_id for workflow run of type 'wait_fail' triggered by 'this' pull request id (current)
-          # pass run_id into this jobs variables so we can use in another step
-          
-      - name: Wait for poitive
+      - name: Wait for workflow completion
         uses: ./
         with:
           input_base_url: "https://api.github.com"
           input_owner: ${{ github.repository_owner }}
           input_repo: "${{ github.event.repository.name }}"
-          input_workflow_run_id: 
+          input_workflow_run_id: ${{ needs.setup.outputs.run_id_wait }}
           input_github_token: ${{ secrets.GITHUB_TOKEN }}
           mimic_input_conclusion: true
           outer_retry_limit: 5
           outer_retry_delay: 60
-          
-      - name: Wait for fail sans mimic
-        id: wait-for-fail
+
+  wait_for_negative_case_sans_mimic:
+    name: Wait for Negative Case (Sans Mimic)
+    needs: setup
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      - name: Wait for workflow completion
         uses: ./
         with:
           input_base_url: "https://api.github.com"
           input_owner: ${{ github.repository_owner }}
           input_repo: "${{ github.event.repository.name }}"
-          input_workflow_run_id: 
+          input_workflow_run_id: ${{ needs.setup.outputs.run_id_wait_fail }}
           input_github_token: ${{ secrets.GITHUB_TOKEN }}
           mimic_input_conclusion: false
           outer_retry_limit: 5
           outer_retry_delay: 60
-          
-      - name: WaitForFail
-        id: wait-for-fail
+
+  # Test Wait For Workflow Run Negative Case
+  wait_for_negative_case:
+    name: Wait for Negative Case
+    needs: setup
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Wait for Negative Case Workflow
+        id: wait-for-negative
         uses: ./
         with:
           input_base_url: "https://api.github.com"
           input_owner: ${{ github.repository_owner }}
           input_repo: "${{ github.event.repository.name }}"
-          input_workflow_run_id: 
+          input_workflow_run_id: ${{ needs.setup.outputs.run_id_wait_fail }}
           input_github_token: ${{ secrets.GITHUB_TOKEN }}
           mimic_input_conclusion: true
           outer_retry_limit: 5
           outer_retry_delay: 60
         continue-on-error: true
+
       - name: Validate Negative Case
-        if: steps.or-gate-action.outcome == 'failure'
+        if: steps.wait-for-negative.outcome == 'failure'
         shell: bash
         run: |
-          echo "Negative case confirmed: OR Gate action failed as expected."
+          echo "Negative case confirmed: Action failed as expected."
+
       - name: Fail If Unexpected Success
-        if: steps.or-gate-action.outcome == 'success'
+        if: steps.wait-for-negative.outcome == 'success'
         shell: bash
         run: |
           echo "Unexpected success. Marking the test as failed."
           exit 1
+
+  # Final aggregate result
+  final_aggregate_result:
+    runs-on: ubuntu-latest
+    needs:
+      - wait_for_positive_case
+      - wait_for_negative_case_sans_mimic
+      - wait_for_negative_case
+    steps:
+      - name: Evaluate Final Results
+        shell: bash
+        run: |
+          echo "Evaluating results of all test-actions-or-gate jobs..."
+          test1="${{ needs.wait_for_positive_case.result }}"
+          test2="${{ needs.wait_for_negative_case_sans_mimic.result }}"
+          test3="${{ needs.wait_for_negative_case.result }}"
+
+          echo "Results:"
+          echo "  wait_for_positive_case: $test1"
+          echo "  wait_for_negative_case_sans_mimic: $test2"
+          echo "  wait_for_negative_case: $test3"
+
+          if [[ "$test1" == "success" && "$test2" == "success" && "$test3" == "success" ]]; then
+            echo "All tests passed. Marking workflow as successful."
+          else
+            echo "One or more tests failed. Marking workflow as failed."
+            exit 1
+          fi

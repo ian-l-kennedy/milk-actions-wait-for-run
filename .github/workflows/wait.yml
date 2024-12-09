@@ -1,0 +1,21 @@
+name: wait
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  # Clean wait (positive case)
+  wait-1:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Clean Wait
+        shell: bash
+        run: |
+          echo "Starting a clean wait for 120 seconds..."
+          sleep 120

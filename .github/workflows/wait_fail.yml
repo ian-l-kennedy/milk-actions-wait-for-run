@@ -1,0 +1,22 @@
+name: wait_fail
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  # Fail wait (negative case)
+  wait-1:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Fail Wait
+        shell: bash
+        run: |
+          echo "Starting a clean wait for 120 seconds..."
+          sleep 120
+          exit 1

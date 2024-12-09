@@ -1,0 +1,58 @@
+name: wait_for_run
+description: "Blocks a workflow on the completion of a single GitHub workflow run."
+inputs:
+  input_base_url:
+    description: "The base URL of the GitHub repository (e.g., https://api.github.com)"
+    required: true
+  input_owner:
+    description: "The owner of the GitHub repository (e.g., username or organization name)"
+    required: true
+  input_repo:
+    description: "The name of the GitHub repository"
+    required: true
+  input_workflow_run_id:
+    description: "The run ID of the workflow where this action is invoked"
+    required: true
+  input_github_token:
+    description: "The GitHub personal access token with appropriate repository permissions"
+    required: true
+  mimic_input_conclusion:
+    description: "The regular expression to gather job names"
+    required: true
+  outer_retry_limit:
+    description: "The maximum number of iterations for the outer loop"
+    required: false
+    default: 60
+  outer_retry_delay:
+    description: "The delay in seconds for each outer loop iteration"
+    required: false
+    default: 300
+runs:
+  using: "composite"
+  steps:
+    - name: main
+      shell: bash
+      run: |
+        set -e
+        set -o pipefail
+        set -u
+
+        echo "Invoking wait_for_run..."
+        echo "Inputs:"
+        echo "input_base_url: ${{ inputs.input_base_url }}"
+        echo "input_owner: ${{ inputs.input_owner }}"
+        echo "input_repo: ${{ inputs.input_repo }}"
+        echo "input_workflow_run_id: ${{ inputs.input_workflow_run_id }}"
+        echo "mimic_input_conclusion: ${{ inputs.mimic_input_conclusion }}"
+        echo "outer_retry_limit: ${{ inputs.outer_retry_limit }}"
+        echo "outer_retry_delay: ${{ inputs.outer_retry_delay }}"
+        echo "input_github_token: *** (hidden for security)"
+
+        bash ./scripts/github_actions_wait_for_run.bash --mimic_input_conclusion "${{ inputs.mimic_input_conclusion }}" \
+            --base-url "${{ inputs.input_base_url }}" \
+            --owner "${{ inputs.input_owner }}" \
+            --repo "${{ inputs.input_repo }}" \
+            --workflow-run-id "${{ inputs.input_workflow_run_id }}" \
+            --outer-retry-limit "${{ inputs.outer_retry_limit }}" \
+            --outer-retry-delay "${{ inputs.outer_retry_delay }}" \
+            --github-token "${{ inputs.input_github_token }}"

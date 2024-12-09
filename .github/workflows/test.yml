@@ -1,0 +1,80 @@
+name: Test Wait For Workflow Run
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test_the_action:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      - name: Acquire run_id for the positive case 'wait'
+        shell: bash
+        run: |
+          # get run_id for workflow run of type 'wait' triggered by 'this' pull request id (current)
+          # pass run_id into this jobs variables so we can use in another step
+          
+      - name: Acquire run_id for the positive case 'wait_fail'
+        shell: bash
+        run: |
+          # get run_id for workflow run of type 'wait_fail' triggered by 'this' pull request id (current)
+          # pass run_id into this jobs variables so we can use in another step
+          
+      - name: Wait for poitive
+        uses: ./
+        with:
+          input_base_url: "https://api.github.com"
+          input_owner: ${{ github.repository_owner }}
+          input_repo: "${{ github.event.repository.name }}"
+          input_workflow_run_id: 
+          input_github_token: ${{ secrets.GITHUB_TOKEN }}
+          mimic_input_conclusion: true
+          outer_retry_limit: 5
+          outer_retry_delay: 60
+          
+      - name: Wait for fail sans mimic
+        id: wait-for-fail
+        uses: ./
+        with:
+          input_base_url: "https://api.github.com"
+          input_owner: ${{ github.repository_owner }}
+          input_repo: "${{ github.event.repository.name }}"
+          input_workflow_run_id: 
+          input_github_token: ${{ secrets.GITHUB_TOKEN }}
+          mimic_input_conclusion: false
+          outer_retry_limit: 5
+          outer_retry_delay: 60
+          
+      - name: WaitForFail
+        id: wait-for-fail
+        uses: ./
+        with:
+          input_base_url: "https://api.github.com"
+          input_owner: ${{ github.repository_owner }}
+          input_repo: "${{ github.event.repository.name }}"
+          input_workflow_run_id: 
+          input_github_token: ${{ secrets.GITHUB_TOKEN }}
+          mimic_input_conclusion: true
+          outer_retry_limit: 5
+          outer_retry_delay: 60
+        continue-on-error: true
+      - name: Validate Negative Case
+        if: steps.or-gate-action.outcome == 'failure'
+        shell: bash
+        run: |
+          echo "Negative case confirmed: OR Gate action failed as expected."
+      - name: Fail If Unexpected Success
+        if: steps.or-gate-action.outcome == 'success'
+        shell: bash
+        run: |
+          echo "Unexpected success. Marking the test as failed."
+          exit 1
